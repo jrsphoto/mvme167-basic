@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make disasm:*)",
+      "Bash(make clean:*)",
+      "Bash(make)",
+      "Bash(m68k-elf-size:*)",
+      "Bash(cat:*)",
+      "Bash(m68k-elf-objdump:*)",
+      "Bash(m68k-elf-nm:*)",
+      "Bash(find:*)",
+      "Bash(vasmm68k_mot:*)",
+      "Bash(m68k-elf-objcopy:*)",
+      "Bash(m68k-elf-gcc:*)",
+      "Bash(echo \"Please run this command on the 167-Bug prompt and paste the output:\nMD 400300;20\")",
+      "Bash(echo:*)",
+      "Bash(awk:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

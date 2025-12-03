@@ -1,0 +1,25 @@
+10 REM Sieve of Eratosthenes Benchmark
+20 LIMIT = 8190
+30 DIM FLAGS(8191)
+40 PRINT "Running 10 Iterations..."
+50 T1 = TI
+60 FOR ITER = 1 TO 10
+70   COUNT = 0
+80   FOR I = 0 TO LIMIT
+90     FLAGS(I) = 1
+100  NEXT I
+110  FOR I = 0 TO LIMIT
+120    IF FLAGS(I) = 0 THEN GOTO 200
+130    PRIME = I + I + 3
+140    K = I + PRIME
+150    IF K > LIMIT THEN GOTO 190
+160    FLAGS(K) = 0
+170    K = K + PRIME
+180    GOTO 150
+190    COUNT = COUNT + 1
+200  NEXT I
+210 NEXT ITER
+220 T2 = TI
+230 PRINT "Done."
+240 PRINT "Primes found: "; COUNT
+250 PRINT "Time (ticks): "; T2 - T1

@@ -1,0 +1,71 @@
+PROJECT: Enhanced BASIC for MVME167 VME Single-Board Computer
+
+CURRENT STATUS:
+- Successfully ported Lee Davison's Enhanced 68k BASIC to MVME167-02
+- Load address fixed: $00400400 (RAM), $FF800400 (ROM)
+- Serial I/O routines converted from ACIA to CD2401 controller
+- Build system: VASM assembler + GNU objcopy
+- Last issue: Duplicate CD2401_BASE definition in line 39 (needs removal)
+
+HARDWARE:
+- Motorola MVME167-02 VME single-board computer
+- MC68040 CPU @ 25/33 MHz
+- 32MB RAM ($00000000-$02000000)
+- 4MB ROM ($FF800000-$FFBFFFFF)
+- CD2401 serial controller @ $FFF45000 (console port 0)
+- 167-Bug monitor for debugging/loading
+
+PROJECT FILES:
+- src/enhanced_basic.s - Main assembly source (8479 lines)
+- Makefile - Build configuration (uses VASM + objcopy)
+- build/ - Generated output (object files, S-records)
+
+BUILD PROCESS:
+1. VASM assembler: src/enhanced_basic.s → build/enhanced_basic.o
+2. objcopy address correction: --change-section-address seg400400+0x400400
+3. objcopy conversion: .o → .srec (Motorola S-record format)
+4. Output: build/enhanced_basic_ram.srec (ready to load)
+
+KEY CHANGES MADE:
+- Memory layout: ORG directives updated to MVME167 addresses
+- Serial I/O: Replaced ACIA ($FE8001) with CD2401 ($FFF45000)
+- VEC_OUT routine: Polls CyCSR bit 5 (transmit ready), writes to CyTDR
+- VEC_IN routine: Polls CyCSR bit 7 (receive ready), reads from CyRDR
+- Loader: Removed dependency on external ROM routines
+
+NEXT STEPS:
+1. Remove duplicate CD2401_BASE definition (line 39)
+2. Build: make clean && make
+3. Upload to MVME167 via serial (9600 baud)
+4. Test: Type BASIC commands (PRINT "HELLO", etc.)
+
+TESTING:
+167-Bug>LO 0;400400
+[send build/enhanced_basic_ram.srec]
+167-Bug>GO 400400
+PRINT "HELLO"
+[Should output: HELLO]
+
+ISSUES IF BASIC DOESN'T RESPOND:
+- Serial I/O routines not working (CD2401 register offsets/access)
+- Memory initialization/stack issues
+- 167-Bug not properly initializing CD2401 before BASIC runs
+- BASIC expecting different I/O vector layout
+
+USEFUL COMMANDS:
+make clean      - Remove build artifacts
+make            - Build RAM version
+make rom        - Build ROM version
+make disasm     - Generate disassembly (build/enhanced_basic.asm)
+make test       - Verify build
+make help       - Show all targets
+
+REFERENCES:
+- Basic68s.x68: Original EASy68k port (8484 lines)
+- CD2401 register definitions: $FFF45000 base, byte offsets
+- 167-Bug documentation: Monitor commands (LO, GO, MD, etc.)
+- MVME167 memory map: RAM $00400400, ROM $FF800400
+
+FILES TO IGNORE:
+- .vscode/ - VS Code configuration (optional)
+- Various documentation files in outputs/

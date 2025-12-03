@@ -1,0 +1,12 @@
+build/
+*.o
+*.elf
+*.srec
+*.bin
+*.asm
+.vscode/
+.DS_Store
+*.swp
+*~
+*.zip
+*.tar.gz

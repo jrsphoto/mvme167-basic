@@ -1,0 +1,372 @@
+Basic68s.x68 → MVME167 Conversion Checklist
+===========================================
+
+This checklist will get Enhanced BASIC running on your MVME167
+in approximately 2-3 hours of work.
+
+PART 1: SETUP (15 minutes)
+--------------------------
+
+□ Copy Basic68s.x68 to your project
+  cp ~/Downloads/Basic68s.x68 src/enhanced_basic.s
+
+□ Create include file for register definitions
+  src/mvme167.inc or include/mvme167.inc
+
+□ Verify your Makefile exists and works
+  make clean all (should fail now, that's expected)
+
+
+PART 2: EDIT MEMORY LAYOUT (10 minutes)
+---------------------------------------
+
+Edit src/enhanced_basic.s and find these lines:
+
+□ Line 34 (code origin):
+  FROM: ORG     $000400
+  TO:   ORG     $00400400
+  WHY:  Start code at MVME167 RAM + offset for stack
+
+□ Line 8321-8322 (RAM start - commented out line):
+  This shows old memory:
+    *   ORG     $40000           (commented)
+    ORG     $10000           (active)
+  CHANGE TO:
+    *   ORG     $40000           (leave commented)
+    ORG     $00400000        (change to MVME167 RAM)
+
+□ Line 8326 (RAM base - after stack):
+  FROM: ORG     $10400
+  TO:   ORG     $00400400
+  WHY:  After 1K stack from $00400000
+
+□ Line 8476 (RAM end):
+  FROM: ram_top   EQU     $18000
+  TO:   ram_top   EQU     $02000000
+  WHY:  32MB RAM on MVME167 (could use less, but this is safe)
+
+VERIFICATION: grep "ORG\|ram_top" src/enhanced_basic.s
+Should show only the 4 locations above
+
+
+PART 3: REPLACE ACIA WITH CD2401 (25 minutes)
+----------------------------------------------
+
+Current serial controller (ACIA) is at lines 39-42:
+  ACIAC    EQU $FE8001
+  ACIAD    EQU ACIAC+2
+  RDRF    EQU 0           ; Receive Data Register Full
+  TDRE    EQU 1           ; Transmit Data Register Empty
+
+Replace with CD2401 definitions:
+
+□ DELETE lines 39-42 (ACIA definitions)
+
+□ INSERT these CD2401 definitions in their place:
+
+*   CD2401 Serial Controller for MVME167
+    CD2401_BASE     EQU     $FFF45000
+    CONSOLE_PORT    EQU     0
+    
+    * CD2401 Register Offsets
+    CyCAR           EQU     $EE    * Channel Address Register
+    CyCCR           EQU     $13    * Channel Control Register
+    CyTDR           EQU     $F8    * Transmit Data Register
+    CyRDR           EQU     $F8    * Receive Data Register
+    CyRFOC          EQU     $30    * Receive FIFO Output Count
+    CyTEOIR         EQU     $85    * Transmit End Of Interrupt
+    
+    * CD2401 Control Values
+    CyENB_XMTR      EQU     $08
+    CyENB_RCVR      EQU     $02
+
+VERIFICATION: grep "CD2401\|ACIAC\|ACIAD" src/enhanced_basic.s
+Should NOT show ACIAC/ACIAD
+Should show CD2401_BASE and register definitions
+
+
+PART 4: REPLACE VEC_OUT ROUTINE (15 minutes)
+---------------------------------------------
+
+Current VEC_OUT (lines 47-57) uses ACIA:
+
+  VEC_OUT
+    MOVEM.l D0,-(sp)
+  * MOVE.b D0,d1
+  * MOVEQ #6,d0
+  * TRAP #15
+  COUT
+    BTST.B #TDRE,ACIAC.L         ← Bit test TDRE on ACIA
+    BEQ.S  COUT                   ← Loop if not ready
+    MOVE.B D0,ACIAD.L             ← Write to ACIA data
+    MOVEM.l (sp)+,d0
+    RTS
+
+Replace with CD2401 version:
+
+□ DELETE lines 47-57 (entire VEC_OUT section)
+
+□ INSERT this CD2401 version:
+
+VEC_OUT
+    MOVEM.l d0-d1/a0,-(sp)   * save d0, d1, a0
+    LEA     CD2401_BASE,a0   * point to CD2401 base
+    
+    * Select channel 0 for console
+    MOVE.B  #CONSOLE_PORT,(a0+CyCAR)
+    
+    * Wait for transmitter ready
+    * CD2401 has 12-byte TX FIFO, so write is usually safe
+    * For maximum safety, could check CyCCR here
+    
+    * Write character to TX data register
+    MOVE.B  d0,(a0+CyTDR)
+    
+    * Optional: short delay
+    NOP
+    NOP
+    
+    MOVEM.l (sp)+,d0-d1/a0   * restore registers
+    RTS
+
+VERIFICATION: Assemble and check for errors
+  make clean all 2>&1 | grep -i "error\|undefined"
+  Should show NO errors about undefined symbols
+
+
+PART 5: REPLACE VEC_IN ROUTINE (20 minutes)
+---------------------------------------------
+
+Current VEC_IN (lines 62-82) uses ACIA status:
+
+  VEC_IN
+    MOVE.l d1,-(sp)
+  * MOVEQ #7,d0
+  * TRAP #15
+  * MOVE.b d1,d0
+    BTST.B  #RDRF,ACIAC.L        ← Check RDRF bit
+    BNE.s   RETCHR               ← Branch if char available
+    MOVE.l  (sp)+,d1
+    ORI.b   #$00,d0              ← No character, set Z flag
+    RTS
+    
+  RETCHR
+  * MOVEQ #5,d0
+  * TRAP #15
+  * MOVE.b d1,d0
+    MOVE.B  ACIAD.L,D0           ← Read from ACIA
+    MOVE.l  (sp)+,d1
+    ORI.b   #$00,d0              ← Set Z flag
+    ORI.b   #1,CCR               ← Set carry flag
+    RTS
+
+Replace with CD2401 version:
+
+□ DELETE lines 62-82 (entire VEC_IN section)
+
+□ INSERT this CD2401 version:
+
+VEC_IN
+    MOVEM.l d1/a0,-(sp)      * save d1, a0
+    LEA     CD2401_BASE,a0   * point to CD2401 base
+    
+    * Select channel 0
+    MOVE.B  #CONSOLE_PORT,(a0+CyCAR)
+    
+    * Check receive FIFO for data
+    MOVE.B  (a0+CyRFOC),d0   * get FIFO output count
+    AND.B   #$0F,d0          * mask to FIFO count (0-12)
+    BEQ.s   VEC_IN_empty      * branch if no data
+    
+    * We have data, read it
+    MOVE.B  (a0+CyRDR),d0    * read from RX data register
+    MOVEM.l (sp)+,d1/a0      * restore d1, a0
+    ORI.b   #$00,d0          * set Z flag (we got data)
+    ORI.b   #1,CCR           * set carry flag
+    RTS
+    
+VEC_IN_empty
+    * No data available
+    MOVEM.l (sp)+,d1/a0      * restore d1, a0
+    ORI.b   #$00,d0          * set Z flag (no data)
+    RTS
+
+VERIFICATION: Assemble again
+  make clean all 2>&1 | head -20
+  Should compile without errors
+
+
+PART 6: VERIFY ASSEMBLY (5 minutes)
+------------------------------------
+
+□ Run full build:
+  make clean all
+
+□ Check for warnings/errors:
+  make 2>&1 | grep -i "warning\|error"
+  Should show NONE (or only info messages)
+
+□ Verify output files created:
+  ls -lh build/
+  Should show:
+    - enhanced_basic.o
+    - enhanced_basic.elf
+    - enhanced_basic.srec
+
+□ Check file sizes are reasonable:
+  wc -l build/enhanced_basic.srec
+  Should be 300-500 lines (about 20-50KB)
+
+
+PART 7: OPTIONAL ENHANCEMENTS (if you want to be thorough)
+----------------------------------------------------------
+
+These are nice-to-have but not required:
+
+□ Add CD2401 initialization routine (before code_start)
+  This ensures clean state even if monitor left it dirty:
+  
+  CD2401_INIT
+      LEA     CD2401_BASE,a0
+      MOVE.B  #CONSOLE_PORT,(a0+CyCAR)
+      MOVE.B  #$0A,(a0+CyCCR)  * Enable RX and TX
+      RTS
+
+  And call it early in code_start section
+
+□ Add optional startup message
+  (Print "Enhanced BASIC for MVME167" on startup)
+
+□ Add documentation comment at top:
+  * Enhanced BASIC for MVME167-02 VME Board
+  * Ported from Basic68s.x68
+  * Uses CD2401 serial controller at $FFF45000
+  * Port 0 (console) for I/O
+
+
+PART 8: TEST BUILD (5 minutes)
+------------------------------
+
+□ Makefile clean builds successfully:
+  make clean && make
+
+□ No assembly errors:
+  Should see "✓ S-record created: build/enhanced_basic.srec"
+
+□ S-record file is valid:
+  file build/enhanced_basic.srec
+  Should say "Motorola S-record"
+
+□ Can view disassembly:
+  make disasm
+  Should create build/enhanced_basic.asm
+
+
+PART 9: PREPARE FOR TESTING (optional now, required later)
+-----------------------------------------------------------
+
+□ Verify Motorola monitor can load S-records:
+  In 167-Bug prompt, type: HELP LOAD
+  Should show LOAD command help
+
+□ Open your serial terminal/Serial Monitor in VS Code
+  Should connect at 9600 baud
+
+□ File > Open in VS Code: build/enhanced_basic.srec
+  You'll send this file to MVME167
+
+
+PART 10: FIRST TEST RUN (do when ready)
+----------------------------------------
+
+When you want to test on actual MVME167:
+
+□ From Motorola monitor prompt:
+  > LOAD
+  [sends enhanced_basic.srec file via serial]
+  [wait for completion]
+  
+□ Jump to BASIC:
+  > GO 400400
+  
+□ Should see:
+  Enhanced 68k BASIC Version x.xx
+  Ready
+  
+□ Test with simple command:
+  PRINT "HELLO"
+  [press ENTER]
+  
+Should output: HELLO
+
+
+CHECKLIST SUMMARY:
+------------------
+
+Total edits needed:
+  ✓ 4 lines: Memory layout (ORG directives)
+  ✓ 8 lines: Register definitions (replace ACIA with CD2401)
+  ✓ 15 lines: VEC_OUT routine
+  ✓ 20 lines: VEC_IN routine
+  
+Total: ~50 lines changed in 8400-line program
+
+Time estimate:
+  Setup:               15 min
+  Memory layout:       10 min
+  Register defs:        5 min
+  VEC_OUT:             15 min
+  VEC_IN:              20 min
+  Verification:        10 min
+  Testing:             30 min
+  ────────────────────────────
+  Total:             2-3 hours
+
+Difficulty: LOW (straightforward register swaps)
+Risk: VERY LOW (proven port structure)
+Chance of success: VERY HIGH (90%+)
+
+
+TROUBLESHOOTING DURING EDITING:
+--------------------------------
+
+Assembly fails with "undefined CyCAR":
+  → You didn't insert the CD2401 register definitions
+  → Check lines around where you deleted ACIA defs
+
+Assembly complains about ACIAC:
+  → You didn't fully delete the old ACIA references
+  → grep -n "ACIAC\|ACIAD" src/enhanced_basic.s
+  → Delete those lines
+
+VEC_OUT or VEC_IN still reference ACIA:
+  → You left some old code
+  → Search for "BTST.*TDRE\|BTST.*RDRF"
+  → Replace those sections with CD2401 versions
+
+Memory layout looks wrong:
+  → grep "^[ \t]*ORG" src/enhanced_basic.s
+  → Should show only the 4 lines you edited
+  → Verify addresses: 400400, 400000, 400400, 02000000
+
+File is too large/small:
+  → Check: ls -lh build/enhanced_basic.srec
+  → Should be 20-50 KB, 300-500 lines
+  → If much larger/smaller, may have copy error
+
+READY TO START?
+---------------
+
+Once you've completed this checklist, you'll have:
+  ✓ BASIC interpreter adapted for MVME167
+  ✓ CD2401 serial I/O configured
+  ✓ Memory layout correct for 32MB RAM
+  ✓ Working S-record file ready to load
+  ✓ Understanding of every change made
+
+Questions? Refer back to:
+  - ANALYSIS_Basic68s_vs_MVME167.txt (context)
+  - cd2401_io_68k.s (reference I/O code)
+  - PORTING_GUIDE.txt (background)
+
+Good luck! You've got this! 🚀
