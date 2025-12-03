@@ -38,6 +38,12 @@
 START_ENTRY
 	* DO NOT TOUCH SP. 167-Bug manages the stack for us.
 	* Overwriting it here crashes the Trap handler.
+	MOVE.L  #$00080000,SP   
+    
+    * Debug 'S'
+    MOVE.B  #'S',-(SP)      * Push 'S'
+    TRAP    #15
+    DC.W    $0020
 
 	* Jump directly to BASIC cold start
 	JMP	LAB_COLD
@@ -522,7 +528,10 @@ LAB_COLD
 	LEA		(VEC_CC,PC),a1	* save CTRL-C check vector
 	MOVE.l	a1,(a0)+		* set vector
 
-	MOVE.l	sp,(a0)		* save entry stack value
+	*MOVE.l	sp,(a0)		* save entry stack value
+	MOVE.L  #$00080000,d0   * New Stack Address
+    MOVE.L  d0,(a0)         * Save it to entry_sp
+    MOVE.L  d0,SP           * Ensure SP is set
 
 	* --- CACHE FLUSH ENABLED ---
    * 68040 CPUSHA BC (Push and Invalidate Both Caches)
@@ -1997,10 +2006,8 @@ LAB_GOSUB
 	MOVE.w	#TK_GOSUB,-(sp)	* push token for GOSUB
 LAB_16B0
 	BSR		LAB_GBYT		* scan memory
-	BRA.s		LAB_GOTO		* perform GOTO n (jump, don't call - GOTO never returns)
-	BRA		LAB_15C2		* go do interpreter inner loop
-						* (can't RTS, we used the stack!)
-
+	BSR.s	LAB_GOTO		* perform GOTO n (jump, don't call - GOTO never returns)
+	
 * tail of IF command
 
 LAB_1754
@@ -2038,18 +2045,15 @@ LAB_16D0
 * search for line # in Itemp from (a0)
 
 LAB_16D4
-	BSR		LAB_SHLN		* search for temp integer line number from a0
-						* returns Cb=0 if found
-	BCS		LAB_USER		* if carry set go do "Undefined statement" error
+    BSR     LAB_SHLN        * search for line
+    BCS     LAB_USER        * if not found error
 
-	* FIX: a0 points to start of line (4-byte ptr). Skip ptr+line# to point to code.
-	ADDQ.w	#6,a0			* Skip 4-byte pointer + 2-byte line number
-	MOVEA.l	a0,a5			* copy to basic execute pointer
-	* REMOVED: SUBQ.w #1,a5 - was causing a5 to point one byte BEFORE token
-	*          LAB_15F6 calls LAB_GBYT which reads (a5) directly, needs exact position
-	MOVE.l	a5,Cpntrl		* save as continue pointer
-	* FIX: Jump directly to interpreter (works for both IF...GOTO and RUN)
-	* NOTE: RUN must use BRA (not BSR) to avoid leaving return address on stack
+    ADDQ.w  #6,a0           * Skip 4-byte Ptr + 2-byte Line# to point to CODE
+    MOVEA.l a0,a5           * copy to basic execute pointer
+    MOVE.l  a5,Cpntrl       * save as continue pointer
+    
+    ADDQ.L  #4,SP           * Pop return address <--- DELETE THIS LINE!
+    
     BRA     LAB_15F6        * Jump to Interpreter Start
 
 * perform LOOP
@@ -6554,49 +6558,58 @@ NextH1
 
 	BRA.s		EndBHS		* go process string
 
-* ctrl-c check routine. includes limited "life" byte save for INGET routine
-* now also the code that checks to see if an interrupt has occurred
-
+*----------------------------------------------------------------------
+* VEC_CC - Check for Ctrl-C
+* Uses a throttle to prevent crashing the 167-Bug with too many Traps.
+*----------------------------------------------------------------------
 VEC_CC
-	* Throttled Ctrl-C check to prevent TRAP #15 storm
-	* Only checks input every 64 BASIC statements
-	MOVE.L	D1,-(SP)		* Save scratch register D1
+    * 1. Save scratch register D1
+    MOVE.L  D1,-(SP)
 
-	* Decrement throttle counter
-	SUBQ.B	#1,cc_throttle
-	BCC.S	.EXIT_CC		* If No Borrow (Result >= 0), skip check
+    * 2. Decrement throttle counter
+    SUBQ.B  #1,cc_throttle
+    BCC.S   .EXIT_CC        * If No Borrow (Result >= 0), skip check
 
-	* Counter rolled over (borrow set), reset it
-	MOVE.B	#64,cc_throttle		* Check input every 64 statements
+    * 3. Counter rolled over, Reset it
+    * 32 is a safe balance between responsiveness and stability
+    MOVE.B  #32,cc_throttle 
 
-	* Perform the actual input check (the expensive part)
-	MOVEM.L	D0/A0,-(SP)		* Save D0/A0 (D1 already saved)
+    * 4. Perform the Input Check via Monitor
+    MOVEM.L D0/A0,-(SP)     * Save D0/A0 (D1 is already saved)
 
-	JSR	VEC_IN			* Check for input
-	BCC.S	.NO_CHAR		* No character? Jump to exit
+    * Check .INSTAT first (Fastest non-blocking check)
+    TRAP    #15
+    DC.W    $0001           * .INSTAT
+    BEQ.S   .NO_CHAR        * Z=1 means no data waiting
 
-	* Character received, check for Ctrl-C ($03)
-	CMP.B	#$03,D0
-	BNE.S	.NO_CHAR
+    * Data is waiting, so get it (.INCHR)
+    SUBQ.L  #2,SP           * Reserve stack space
+    TRAP    #15
+    DC.W    $0000           * .INCHR
+    MOVE.B  (SP)+,D0        * Pop character
+    
+    * Check for Ctrl-C ($03)
+    CMP.B   #$03,D0
+    BNE.S   .NO_CHAR        
 
-	* --- CTRL-C DETECTED ---
-	LEA	.CTRLC_MSG,A0
-	BSR	LAB_18C3		* Print "[Break...]"
-
-	* Return to 167-Bug
-	TRAP	#15
-	DC.W	$0063			* .RETURN
+    * --- CTRL-C DETECTED ---
+    LEA     .CTRLC_MSG,A0
+    BSR     LAB_18C3        * Print "[Break]"
+    
+    * Return to 167-Bug
+    TRAP    #15
+    DC.W    $0063           * .RETURN to Bug
 
 .NO_CHAR
-	MOVEM.L	(SP)+,D0/A0		* Restore regs used for check
+    MOVEM.L (SP)+,D0/A0     * Restore regs
 
 .EXIT_CC
-	MOVE.L	(SP)+,D1		* Restore scratch D1
-	RTS
+    MOVE.L  (SP)+,D1        * Restore scratch D1
+    RTS
 
 .CTRLC_MSG
-	DC.B	13,10,'[Break - Returning to 167-Bug]',13,10,0
-	EVEN
+    DC.B    13,10,'[Break]',13,10,0
+    EVEN
 
 LAB_FBA0
 	TST.b		ccnull		* get countdown byte
@@ -8720,7 +8733,7 @@ file_id	ds.l	1			* load/save file ID
 
 	EVEN					* Force prg_strt to EVEN address!
 prg_strt
-ram_top	EQU	$02000000		* last RAM byte + 1
+ram_top	EQU	$01FFFE00		* last RAM byte + 1
 
 	END	code_start
 
