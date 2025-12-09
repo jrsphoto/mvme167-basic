@@ -1,4 +1,4 @@
-# Enhanced 68k BASIC for MVME167
+# Enhanced 68k BASIC for MVME167 (WIP)
 
 A port of Enhanced 68k BASIC (originally for EASy68k simulator) to the Motorola MVME167-02 single-board computer with 167-Bug ROM monitor.
 
